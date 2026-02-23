@@ -1,25 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    NOTE: allowBackup="false" in AndroidManifest.xml disables automatic backup.
+    These rules are a safety net in case backup is re-enabled later.
+-->
 <full-backup-content>
-    <!-- Exclude sensitive credentials and encrypted data from backup -->
-
-    <!-- Encrypted credentials (API keys, tokens, session IDs) -->
-    <exclude domain="sharedpref" path="termux_ai_prefs.xml" />
-
-    <!-- Terminal tab state (may contain sensitive working directories) -->
-    <exclude domain="sharedpref" path="terminal_tabs.xml" />
-
-    <!-- AndroidX Security Crypto master key file -->
-    <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs__.xml" />
-
-    <!-- Default app preferences (encrypted by androidx security) -->
-    <exclude domain="sharedpref" path="com.termux.ai_preferences.xml" />
-
-    <!-- Exclude logs that may contain sensitive command output -->
+    <!-- Exclude ALL credentials -->
+    <exclude domain="sharedpref" path="." />
+    
+    <!-- Exclude the entire Termux bootstrap environment -->
+    <exclude domain="file" path="usr/" />
+    
+    <!-- Exclude logs and temp -->
     <exclude domain="file" path="logs/" />
     <exclude domain="file" path="temp/" />
     <exclude domain="cache" path="." />
-
-    <!-- Include non-sensitive user settings and data -->
-    <include domain="file" path="." />
-    <include domain="database" path="." />
+    
+    <!-- Exclude WorkManager database (if somehow still present) -->
+    <exclude domain="file" path="../no_backup/" />
+    
+    <!-- Only include user scripts if backup is re-enabled -->
+    <include domain="file" path="scripts/" />
 </full-backup-content>

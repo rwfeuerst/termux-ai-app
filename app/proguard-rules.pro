@@ -1,43 +1,40 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ProGuard rules for Termux AI
+# ---------------------------------------------------------
+# FIXED: Removed blanket "-keep class com.termux.ai.** { *; }" etc.
+# that prevented ALL obfuscation. Now only keeps what's necessary.
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
-
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
+# Keep line numbers for crash reports
 -keepattributes SourceFile,LineNumberTable
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# =========================================================
+# App-specific keeps (only classes accessed via reflection)
+# =========================================================
 
-# Keep Termux AI specific classes
--keep class com.termux.ai.** { *; }
--keep class com.termux.terminal.** { *; }
--keep class com.termux.app.** { *; }
+# Keep the Application class (referenced by name in manifest)
+-keep public class com.termux.plus.TermuxPlusApplication
 
-# Keep Claude integration classes
--keep class com.termux.ai.AIClient { *; }
--keep class com.termux.ai.ClaudeCodeIntegration { *; }
--keep class com.termux.ai.ContextEngine { *; }
+# Keep Activities, Services, Receivers, Providers (manifest references)
+-keep public class * extends android.app.Activity
+-keep public class * extends android.app.Service
+-keep public class * extends android.content.BroadcastReceiver
+-keep public class * extends android.content.ContentProvider
 
-# Keep terminal emulator classes
--keep class com.termux.terminal.EnhancedTerminalView { *; }
--keep class com.termux.terminal.TerminalSession { *; }
--keep class com.termux.terminal.TerminalEmulator { *; }
+# Keep Fragment constructors (instantiated by framework)
+-keepclassmembers class * extends androidx.fragment.app.Fragment {
+    public <init>(...);
+}
 
 # Keep native methods
 -keepclasseswithmembernames class * {
     native <methods>;
+}
+
+# Keep custom view constructors (inflated from XML)
+-keepclasseswithmembers class * {
+    public <init>(android.content.Context, android.util.AttributeSet);
+}
+-keepclasseswithmembers class * {
+    public <init>(android.content.Context, android.util.AttributeSet, int);
 }
 
 # Keep enum classes
@@ -46,12 +43,12 @@
     public static ** valueOf(java.lang.String);
 }
 
-# Keep Parcelable implementations
+# Keep Parcelable
 -keep class * implements android.os.Parcelable {
     public static final android.os.Parcelable$Creator *;
 }
 
-# Keep Serializable classes
+# Keep Serializable
 -keepnames class * implements java.io.Serializable
 -keepclassmembers class * implements java.io.Serializable {
     static final long serialVersionUID;
@@ -63,28 +60,26 @@
     java.lang.Object readResolve();
 }
 
-# Keep Fragment constructors
--keepclassmembers class * extends androidx.fragment.app.Fragment {
-    public <init>(...);
-}
-
-# Keep Activity and Service classes
--keep public class * extends android.app.Activity
--keep public class * extends android.app.Service
--keep public class * extends android.content.BroadcastReceiver
--keep public class * extends android.content.ContentProvider
-
-# Keep application class
--keep public class com.termux.plus.TermuxPlusApplication
-
-# OkHttp and networking
+# =========================================================
+# OkHttp
+# =========================================================
 -dontwarn okhttp3.**
 -dontwarn okio.**
 -dontwarn javax.annotation.**
--keep class okhttp3.** { *; }
+# Only keep the public API, not internals
+-keep class okhttp3.OkHttpClient { *; }
+-keep class okhttp3.Request { *; }
+-keep class okhttp3.Request$Builder { *; }
+-keep class okhttp3.Response { *; }
+-keep class okhttp3.RequestBody { *; }
+-keep class okhttp3.MediaType { *; }
+-keep class okhttp3.Call { *; }
+-keep class okhttp3.Callback { *; }
 -keep interface okhttp3.** { *; }
 
-# Gson
+# =========================================================
+# Gson (needs reflection for serialization)
+# =========================================================
 -keepattributes Signature
 -keepattributes *Annotation*
 -dontwarn sun.misc.**
@@ -92,45 +87,40 @@
 -keep class * implements com.google.gson.TypeAdapterFactory
 -keep class * implements com.google.gson.JsonSerializer
 -keep class * implements com.google.gson.JsonDeserializer
+# Keep any data classes that Gson deserializes
+-keepclassmembers class com.termux.ai.** {
+    <fields>;
+}
 
-# Retrofit
--dontwarn retrofit2.**
--keep class retrofit2.** { *; }
--keepattributes Signature
--keepattributes Exceptions
+# =========================================================
+# Room database (uses reflection for DAOs)
+# =========================================================
+-keep class * extends androidx.room.RoomDatabase
+-keep @androidx.room.Entity class *
+-keep @androidx.room.Dao interface *
 
-# Material Design Components
+# =========================================================
+# Material Design
+# =========================================================
 -keep class com.google.android.material.** { *; }
 -dontwarn com.google.android.material.**
 
-# AndroidX
--keep class androidx.** { *; }
+# =========================================================
+# AndroidX (keep public API only)
+# =========================================================
 -dontwarn androidx.**
 
-# Keep custom view constructors
--keepclasseswithmembers class * {
-    public <init>(android.content.Context, android.util.AttributeSet);
-}
--keepclasseswithmembers class * {
-    public <init>(android.content.Context, android.util.AttributeSet, int);
-}
-
-# Keep onClick methods
--keepclassmembers class * {
-    public void *Click(android.view.View);
-}
-
-# Keep WebView JavaScript interfaces
--keepclassmembers class * {
-    @android.webkit.JavascriptInterface <methods>;
-}
-
-# Remove logging in release builds
+# =========================================================
+# Strip logging in release
+# =========================================================
 -assumenosideeffects class android.util.Log {
     public static boolean isLoggable(java.lang.String, int);
     public static int v(...);
-    public static int i(...);
-    public static int w(...);
     public static int d(...);
-    public static int e(...);
+    public static int i(...);
 }
+# Keep warn and error logs for production diagnostics
+# -assumenosideeffects class android.util.Log {
+#     public static int w(...);
+#     public static int e(...);
+# }

@@ -1,42 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
-    <!-- Rules for Android 12+ (API 31+) device-to-device and cloud backups -->
-
     <cloud-backup disableIfNoEncryptionCapabilities="true">
-        <!-- Exclude ALL credentials and sensitive data from cloud backup -->
-
-        <!-- Exclude encrypted credentials -->
-        <exclude domain="sharedpref" path="termux_ai_prefs.xml" />
-        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs__.xml" />
-
-        <!-- Exclude terminal tab state (may contain sensitive paths) -->
-        <exclude domain="sharedpref" path="terminal_tabs.xml" />
-
-        <!-- Exclude logs and temporary files -->
+        <!-- Exclude all credentials from cloud backup -->
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="usr/" />
         <exclude domain="file" path="logs/" />
         <exclude domain="file" path="temp/" />
         <exclude domain="cache" path="." />
-
-        <!-- Include non-sensitive application data -->
-        <include domain="database" path="." />
-        <include domain="file" path="." />
+        
+        <include domain="file" path="scripts/" />
     </cloud-backup>
 
     <device-transfer>
-        <!-- For device-to-device transfer, exclude credentials but allow settings -->
-
-        <!-- CRITICAL: Exclude credentials from device transfer -->
-        <exclude domain="sharedpref" path="termux_ai_prefs.xml" />
-        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs__.xml" />
-        <exclude domain="sharedpref" path="terminal_tabs.xml" />
-
-        <!-- Exclude temporary and cache data -->
+        <!-- Exclude credentials from device-to-device transfer -->
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="usr/" />
         <exclude domain="file" path="logs/" />
         <exclude domain="file" path="temp/" />
         <exclude domain="cache" path="." />
-
-        <!-- Include non-sensitive data -->
-        <include domain="file" path="." />
-        <include domain="database" path="." />
+        
+        <include domain="file" path="scripts/" />
     </device-transfer>
 </data-extraction-rules>

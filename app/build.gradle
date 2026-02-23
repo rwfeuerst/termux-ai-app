@@ -6,7 +6,9 @@ plugins {
 android {
     namespace 'com.termux.ai'
     compileSdk 34
-    ndkVersion "27.3.13750724"
+
+    // Use a range or remove to let AGP pick the installed version
+    // ndkVersion "27.3.13750724"  // <-- too specific, breaks on other machines
 
     defaultConfig {
         applicationId "com.termux.ai"
@@ -17,13 +19,14 @@ android {
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         
-        // AI Integration Configuration
-        buildConfigField "String", "CLAUDE_API_BASE", '"https://claude.ai/api"'
+        // AI Integration Configuration — CORRECT endpoints
+        buildConfigField "String", "ANTHROPIC_API_BASE", '"https://api.anthropic.com/v1"'
+        buildConfigField "String", "ANTHROPIC_API_VERSION", '"2023-06-01"'
         buildConfigField "String", "AI_VERSION", '"2.0.0"'
         buildConfigField "boolean", "AI_ENABLED", "true"
         
-        // OAuth redirect scheme
-        manifestPlaceholders = [appAuthRedirectScheme: "com.termux.ai"]
+        // REMOVED: OAuth redirect scheme (Anthropic doesn't use OAuth)
+        // manifestPlaceholders = [appAuthRedirectScheme: "com.termux.ai"]
         
         ndk {
             abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
@@ -37,6 +40,7 @@ android {
             buildConfigField "boolean", "AI_DEBUG", "true"
         }
         release {
+            debuggable false  // <-- explicitly false for release
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             buildConfigField "boolean", "AI_DEBUG", "false"
@@ -68,8 +72,8 @@ dependencies {
     // Terminal emulator module
     implementation project(':terminal-emulator')
 
-    // Security
-    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+    // Security — use the stable release, not alpha
+    implementation 'androidx.security:security-crypto:1.0.0'
     implementation 'androidx.biometric:biometric:1.1.0'
 
     // Original Termux dependencies
@@ -82,18 +86,24 @@ dependencies {
     implementation 'io.noties.markwon:core:4.6.2'
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
 
-    // AI Integration dependencies
+    // AI Integration — OkHttp + Gson (no Retrofit needed, we make direct calls)
     implementation 'com.squareup.okhttp3:okhttp:4.11.0'
-    implementation 'com.squareup.retrofit2:retrofit:2.9.0'
-    implementation 'com.squareup.retrofit2:converter-gson:2.9.0'
     implementation 'com.google.code.gson:gson:2.10.1'
-    implementation 'androidx.work:work-runtime:2.8.1'
+
+    // REMOVED: Retrofit (not used — AIClient uses OkHttp directly)
+    // implementation 'com.squareup.retrofit2:retrofit:2.9.0'
+    // implementation 'com.squareup.retrofit2:converter-gson:2.9.0'
+
+    // REMOVED: WorkManager (no background tasks defined — was running empty)
+    // implementation 'androidx.work:work-runtime:2.8.1'
+
+    // REMOVED: AppAuth OAuth library (Anthropic uses API keys, not OAuth)
+    // implementation 'net.openid:appauth:0.11.1'
+    // implementation 'androidx.browser:browser:1.6.0'
+
+    // Lifecycle
     implementation 'androidx.lifecycle:lifecycle-viewmodel:2.6.2'
     implementation 'androidx.lifecycle:lifecycle-livedata:2.6.2'
-    
-    // OAuth and Authentication
-    implementation 'net.openid:appauth:0.11.1'
-    implementation 'androidx.browser:browser:1.6.0'
     
     // Database for AI context and learning
     implementation 'androidx.room:room-runtime:2.5.0'

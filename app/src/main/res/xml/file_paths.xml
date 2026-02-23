@@ -1,19 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Internal app storage -->
-    <files-path name="app_files" path="." />
+    <!--
+        FIXED: Replaced root-level path="." with specific subdirectories.
+        The original exposed ALL internal files via FileProvider.
+    -->
+
+    <!-- Shared files (for intent-based file sharing) -->
+    <files-path name="shared_files" path="shared/" />
     
-    <!-- Cache directory -->
-    <cache-path name="app_cache" path="." />
+    <!-- Scripts the user might want to share -->
+    <files-path name="scripts" path="scripts/" />
     
-    <!-- External storage for file sharing -->
-    <external-files-path name="external_files" path="." />
-    <external-cache-path name="external_cache" path="." />
-    
-    <!-- Shared downloads directory -->
+    <!-- AI models if sharing is needed -->
+    <files-path name="ai_models" path="ai_models/" />
+
+    <!-- External downloads directory -->
     <external-files-path name="downloads" path="Downloads/" />
     
-    <!-- AI models and scripts -->
-    <files-path name="ai_models" path="ai_models/" />
-    <files-path name="scripts" path="scripts/" />
+    <!-- Cache for temporary sharing (auto-cleaned) -->
+    <cache-path name="share_cache" path="share_cache/" />
 </paths>

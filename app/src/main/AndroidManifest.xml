@@ -15,25 +15,22 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Removed unused dangerous permissions:
-         - CAMERA (not implemented)
-         - SYSTEM_ALERT_WINDOW (not needed)
-         - BODY_SENSORS (not required for accelerometer/shake detection)
-    -->
+    <!-- REMOVED: RECORD_AUDIO — not used anywhere in the codebase.
+         Add back ONLY when voice input is actually implemented. -->
 
     <application
         android:name="com.termux.plus.TermuxPlusApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.TermuxPlus"
-        android:requestLegacyExternalStorage="true"
-        android:preserveLegacyExternalStorage="true"
-        tools:targetApi="31">
+        tools:targetApi="34">
+
+        <!-- REMOVED: requestLegacyExternalStorage and preserveLegacyExternalStorage
+             Not needed when properly targeting SDK 34 with scoped storage. -->
 
         <!-- Main Terminal Activity with Tabs -->
         <activity
@@ -49,7 +46,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             
-            <!-- Support for termux:// URLs -->
+            <!-- Support for termux-ai:// URLs -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -58,12 +55,27 @@
             </intent-filter>
         </activity>
 
+        <!-- 
+            VIEW and SEND intent handlers.
+            FIXED: Replaced wildcard */* MIME with specific types this app
+            can actually handle. Validates intent data in the Activity.
+        -->
         <activity android:name="com.termux.app.TermuxViewActivity"
                   android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
-                <data android:mimeType="*/*"/>
+                <data android:mimeType="text/*"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="application/x-sh"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="application/json"/>
             </intent-filter>
         </activity>
 
@@ -72,7 +84,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.SEND"/>
                 <category android:name="android.intent.category.DEFAULT"/>
-                <data android:mimeType="*/*"/>
+                <data android:mimeType="text/*"/>
             </intent-filter>
         </activity>
 
@@ -97,7 +109,7 @@
             android:parentActivityName="com.termux.app.TermuxPlusSettingsActivity"
             android:theme="@style/Theme.TermuxPlus" />
 
-        <!-- Claude Code Setup Activity -->
+        <!-- Claude/AI Setup Activity (API key entry, provider selection) -->
         <activity
             android:name="com.termux.ai.ClaudeSetupActivity"
             android:exported="false"
@@ -111,8 +123,6 @@
             android:label="@string/file_picker_title"
             android:theme="@style/Theme.TermuxPlus" />
 
-        <!-- Services removed - were empty implementations with no functionality -->
-
         <!-- File Provider for sharing files -->
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -124,15 +134,8 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- Receiver for system events -->
-        <receiver
-            android:name="com.termux.receivers.TermuxPlusReceiver"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
+        <!-- REMOVED: BOOT_COMPLETED receiver (onReceive was empty placeholder) -->
+        <!-- Add back when there's actual boot-time initialization to perform -->
 
     </application>
 

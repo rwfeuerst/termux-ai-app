@@ -18,52 +18,54 @@ import java.util.concurrent.TimeUnit;
 
 import okhttp3.Call;
 import okhttp3.Callback;
-import okhttp3.CertificatePinner;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
-import okhttp3.WebSocket;
-import okhttp3.WebSocketListener;
 
 /**
- * AI Client for Claude and Gemini integration in Termux
- * 
- * Handles:
- * - Authentication with Claude API / Gemini API Key
- * - Real-time command analysis
- * - Context-aware suggestions
- * - Error diagnostics
- * - Code generation
+ * AI Client for Claude (Anthropic Messages API) and Gemini integration in Termux+
+ *
+ * Claude integration uses the official Anthropic Messages API:
+ *   https://api.anthropic.com/v1/messages
+ *   Auth: x-api-key header with API key from console.anthropic.com
+ *
+ * Gemini integration uses the Google Generative Language API:
+ *   https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent
+ *   Auth: x-goog-api-key header
  */
 public class AIClient {
     private static final String TAG = "TermuxAI";
-    private static final String PREFS_NAME = "termux_ai_prefs";
-    private static final String PREF_AUTH_TOKEN = "auth_token";
-    private static final String PREF_SESSION_ID = "session_id";
+    private static final String PREFS_NAME = "termux_ai_credentials";
+    private static final String PREF_CLAUDE_API_KEY = "claude_api_key";
     private static final String PREF_AI_PROVIDER = "ai_provider";
     private static final String PREF_GEMINI_API_KEY = "gemini_api_key";
-    
-    public static final String CLAUDE_API_BASE_URL = "https://claude.ai/api";
+    private static final String PREF_CLAUDE_MODEL = "claude_model";
+
+    // Correct Anthropic API endpoint
+    public static final String ANTHROPIC_API_BASE_URL = "https://api.anthropic.com/v1";
+    public static final String ANTHROPIC_API_VERSION = "2023-06-01";
+    public static final String DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514";
+
+    // Gemini endpoint (this was already correct)
     public static final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
-    
+
     private final Context context;
     private final OkHttpClient httpClient;
     private final Gson gson;
     private final SharedPreferences prefs;
     private final Handler mainHandler;
-    
-    private String authToken;
-    private String sessionId;
+
+    private String claudeApiKey;
     private String geminiApiKey;
+    private String claudeModel;
     private String currentProvider; // "claude" or "gemini"
 
-    private WebSocket webSocket;
     private AIClientListener listener;
-    
+
     public interface AIClientListener {
         void onSuggestionReceived(String suggestion, float confidence);
         void onErrorAnalysis(String error, String analysis, String[] solutions);
@@ -71,154 +73,313 @@ public class AIClient {
         void onConnectionStatusChanged(boolean connected);
         void onAuthenticationRequired();
     }
-    
+
     public AIClient(@NonNull Context context) {
         this.context = context.getApplicationContext();
         this.gson = new Gson();
         this.mainHandler = new Handler(Looper.getMainLooper());
 
-        // Use encrypted SharedPreferences for secure credential storage
+        // Use encrypted SharedPreferences for credential storage
         this.prefs = EncryptedPreferencesManager.getEncryptedPrefs(context, PREFS_NAME);
 
-        // Migrate existing plaintext preferences if they exist
+        // Migrate any old plaintext prefs from the original broken config
         EncryptedPreferencesManager.migratePlaintextToEncrypted(
             context,
-            "termux_ai_prefs",  // old plaintext name
-            PREFS_NAME          // new encrypted name
+            "termux_ai_prefs",   // old plaintext prefs name
+            PREFS_NAME           // new encrypted prefs name (different!)
         );
 
-        // Build OkHttpClient with security configurations
-        OkHttpClient.Builder httpBuilder = new OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .writeTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .pingInterval(30, TimeUnit.SECONDS);
-
-        // Add certificate pinning for enhanced security
-        // Note: Certificate pins should be updated periodically. To get current pins:
-        // echo | openssl s_client -connect generativelanguage.googleapis.com:443 2>&1 | \
-        //   openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | \
-        //   openssl dgst -sha256 -binary | base64
-        //
-        // WARNING: Certificate pinning can cause app to stop working if certificates
-        // are rotated. For production, implement pin backup/rotation strategy.
-        CertificatePinner certificatePinner = new CertificatePinner.Builder()
-            // Google API pins (multiple pins for backup)
-            // These are example pins - you MUST fetch actual pins before enabling
-            // .add("generativelanguage.googleapis.com", "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-            // .add("generativelanguage.googleapis.com", "sha256/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=")
-            // .add("*.googleapis.com", "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-
-            // Anthropic API pins (if/when using official API)
-            // .add("api.anthropic.com", "sha256/CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=")
-            // .add("api.anthropic.com", "sha256/DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=")
+        // Build OkHttpClient
+        this.httpClient = new OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)  // Claude responses can take a moment
             .build();
 
-        // Enable certificate pinning only if pins are properly configured
-        // Comment this out until you fetch actual certificate pins
-        // httpBuilder.certificatePinner(certificatePinner);
-
-        this.httpClient = httpBuilder.build();
-
-        loadAuthenticationData();
+        loadCredentials();
     }
-    
+
     public void setListener(AIClientListener listener) {
         this.listener = listener;
     }
-    
-    private void loadAuthenticationData() {
-        authToken = prefs.getString(PREF_AUTH_TOKEN, null);
-        sessionId = prefs.getString(PREF_SESSION_ID, null);
+
+    // =========================================================================
+    // Credential Management
+    // =========================================================================
+
+    private void loadCredentials() {
+        claudeApiKey = prefs.getString(PREF_CLAUDE_API_KEY, null);
         geminiApiKey = prefs.getString(PREF_GEMINI_API_KEY, null);
         currentProvider = prefs.getString(PREF_AI_PROVIDER, "claude");
+        claudeModel = prefs.getString(PREF_CLAUDE_MODEL, DEFAULT_CLAUDE_MODEL);
     }
-    
-    private void saveAuthenticationData() {
+
+    private void saveCredentials() {
         prefs.edit()
-            .putString(PREF_AUTH_TOKEN, authToken)
-            .putString(PREF_SESSION_ID, sessionId)
+            .putString(PREF_CLAUDE_API_KEY, claudeApiKey)
             .putString(PREF_GEMINI_API_KEY, geminiApiKey)
+            .putString(PREF_AI_PROVIDER, currentProvider)
+            .putString(PREF_CLAUDE_MODEL, claudeModel)
             .apply();
     }
-    
+
+    /**
+     * Set the Claude API key. Get yours from:
+     * https://console.anthropic.com/settings/keys
+     */
+    public void setClaudeApiKey(String apiKey) {
+        this.claudeApiKey = apiKey;
+        saveCredentials();
+    }
+
+    /**
+     * Set the Gemini API key.
+     */
+    public void setGeminiApiKey(String apiKey) {
+        this.geminiApiKey = apiKey;
+        saveCredentials();
+    }
+
+    /**
+     * Set the Claude model to use.
+     * Options: claude-sonnet-4-20250514, claude-haiku-4-5-20251001, etc.
+     */
+    public void setClaudeModel(String model) {
+        this.claudeModel = model;
+        saveCredentials();
+    }
+
+    /**
+     * Switch between "claude" and "gemini" providers.
+     */
+    public void setProvider(String provider) {
+        if ("claude".equals(provider) || "gemini".equals(provider)) {
+            this.currentProvider = provider;
+            saveCredentials();
+        }
+    }
+
+    public String getCurrentProvider() {
+        return currentProvider;
+    }
+
+    public String getClaudeModel() {
+        return claudeModel != null ? claudeModel : DEFAULT_CLAUDE_MODEL;
+    }
+
     public boolean isAuthenticated() {
         if ("gemini".equals(currentProvider)) {
             return geminiApiKey != null && !geminiApiKey.isEmpty();
         }
-        return authToken != null && !authToken.isEmpty();
+        return claudeApiKey != null && !claudeApiKey.isEmpty();
     }
-    
+
     /**
-     * Authenticate with Claude using OAuth
+     * Validate the Claude API key by making a lightweight request.
      */
-    public void authenticate(String oauthCode, AuthCallback callback) {
-        JsonObject authRequest = new JsonObject();
-        authRequest.addProperty("grant_type", "authorization_code");
-        authRequest.addProperty("code", oauthCode);
-        authRequest.addProperty("client_id", "termux-ai");
-        
-        RequestBody body = RequestBody.create(gson.toJson(authRequest), JSON);
+    public void validateClaudeApiKey(AuthCallback callback) {
+        if (claudeApiKey == null || claudeApiKey.isEmpty()) {
+            callback.onError("No API key set");
+            return;
+        }
+
+        // Send a minimal request to validate the key
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("model", getClaudeModel());
+        requestBody.addProperty("max_tokens", 10);
+
+        JsonArray messages = new JsonArray();
+        JsonObject msg = new JsonObject();
+        msg.addProperty("role", "user");
+        msg.addProperty("content", "hi");
+        messages.add(msg);
+        requestBody.add("messages", messages);
+
+        RequestBody body = RequestBody.create(gson.toJson(requestBody), JSON);
         Request request = new Request.Builder()
-            .url(CLAUDE_API_BASE_URL + "/oauth/token")
+            .url(ANTHROPIC_API_BASE_URL + "/messages")
+            .addHeader("x-api-key", claudeApiKey)
+            .addHeader("anthropic-version", ANTHROPIC_API_VERSION)
+            .addHeader("content-type", "application/json")
             .post(body)
             .build();
-            
+
         httpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(@NonNull Call call, @NonNull IOException e) {
-                Log.e(TAG, "Authentication failed", e);
-                callback.onError("Authentication failed: " + e.getMessage());
+                mainHandler.post(() -> callback.onError("Network error: " + e.getMessage()));
             }
-            
+
             @Override
             public void onResponse(@NonNull Call call, @NonNull Response response) throws IOException {
                 if (response.isSuccessful()) {
-                    String responseBody = response.body().string();
-                    JsonObject authResponse = gson.fromJson(responseBody, JsonObject.class);
-
-                    authToken = authResponse.get("access_token").getAsString();
-                    sessionId = authResponse.get("session_id").getAsString();
-
-                    saveAuthenticationData();
-                    callback.onSuccess();
+                    mainHandler.post(callback::onSuccess);
                 } else {
-                    String errorBody = response.body().string();
-                    String errorMessage = "Authentication failed: " + response.code();
-                    try {
-                        JsonObject errorResponse = gson.fromJson(errorBody, JsonObject.class);
-                        if (errorResponse.has("error_description")) {
-                            errorMessage = errorResponse.get("error_description").getAsString();
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to parse error response", e);
+                    String errorBody = response.body() != null ? response.body().string() : "";
+                    String errorMsg;
+                    switch (response.code()) {
+                        case 401:
+                            errorMsg = "Invalid API key. Check your key at console.anthropic.com";
+                            break;
+                        case 403:
+                            errorMsg = "API key lacks permission. Check your Anthropic account.";
+                            break;
+                        case 429:
+                            errorMsg = "Rate limited. Try again in a moment.";
+                            break;
+                        default:
+                            errorMsg = "API error " + response.code() + ": " + errorBody;
                     }
-                    callback.onError(errorMessage);
+                    mainHandler.post(() -> callback.onError(errorMsg));
+                }
+                if (response.body() != null) response.body().close();
+            }
+        });
+    }
+
+    // =========================================================================
+    // Claude Messages API - Core Request Method
+    // =========================================================================
+
+    /**
+     * Send a request to the Anthropic Messages API.
+     *
+     * API docs: https://docs.anthropic.com/en/api/messages
+     */
+    private void sendClaudeRequest(String systemPrompt, String userMessage,
+                                    int maxTokens, RequestCallback callback) {
+        if (claudeApiKey == null || claudeApiKey.isEmpty()) {
+            callback.onError("Claude API key not configured");
+            return;
+        }
+
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("model", getClaudeModel());
+        requestBody.addProperty("max_tokens", maxTokens);
+
+        // System prompt
+        if (systemPrompt != null && !systemPrompt.isEmpty()) {
+            requestBody.addProperty("system", systemPrompt);
+        }
+
+        // Messages array
+        JsonArray messages = new JsonArray();
+        JsonObject msg = new JsonObject();
+        msg.addProperty("role", "user");
+        msg.addProperty("content", userMessage);
+        messages.add(msg);
+        requestBody.add("messages", messages);
+
+        RequestBody body = RequestBody.create(gson.toJson(requestBody), JSON);
+        Request request = new Request.Builder()
+            .url(ANTHROPIC_API_BASE_URL + "/messages")
+            .addHeader("x-api-key", claudeApiKey)
+            .addHeader("anthropic-version", ANTHROPIC_API_VERSION)
+            .addHeader("content-type", "application/json")
+            .post(body)
+            .build();
+
+        httpClient.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(@NonNull Call call, @NonNull IOException e) {
+                callback.onError("Request failed: " + e.getMessage());
+            }
+
+            @Override
+            public void onResponse(@NonNull Call call, @NonNull Response response) throws IOException {
+                try {
+                    if (response.isSuccessful()) {
+                        String responseBody = response.body().string();
+                        JsonObject jsonResponse = gson.fromJson(responseBody, JsonObject.class);
+                        callback.onSuccess(jsonResponse);
+                    } else if (response.code() == 401) {
+                        claudeApiKey = null;
+                        saveCredentials();
+                        mainHandler.post(() -> {
+                            if (listener != null) {
+                                listener.onAuthenticationRequired();
+                            }
+                        });
+                        callback.onError("API key invalid or expired");
+                    } else if (response.code() == 429) {
+                        callback.onError("Rate limited. Please wait a moment.");
+                    } else if (response.code() == 529) {
+                        callback.onError("Anthropic API is temporarily overloaded. Try again.");
+                    } else {
+                        String errorBody = response.body() != null ? response.body().string() : "unknown";
+                        callback.onError("API error " + response.code() + ": " + errorBody);
+                    }
+                } finally {
+                    if (response.body() != null) response.body().close();
                 }
             }
         });
     }
-    
+
     /**
-     * Analyze command and provide suggestions
+     * Extract text content from a Claude Messages API response.
+     *
+     * Response format:
+     * {
+     *   "content": [
+     *     { "type": "text", "text": "..." }
+     *   ],
+     *   "model": "...",
+     *   "stop_reason": "end_turn",
+     *   "usage": { "input_tokens": N, "output_tokens": N }
+     * }
      */
+    private String extractClaudeText(JsonObject response) {
+        JsonArray content = response.getAsJsonArray("content");
+        if (content != null && content.size() > 0) {
+            JsonObject firstBlock = content.get(0).getAsJsonObject();
+            if ("text".equals(firstBlock.get("type").getAsString())) {
+                return firstBlock.get("text").getAsString();
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Extract JSON from Claude's text response.
+     * Claude may wrap JSON in markdown code fences, so we strip those.
+     */
+    private JsonObject extractClaudeJson(JsonObject response) {
+        String text = extractClaudeText(response);
+        text = text.trim();
+
+        // Strip markdown code fences
+        if (text.startsWith("```json")) {
+            text = text.substring(7);
+        } else if (text.startsWith("```")) {
+            text = text.substring(3);
+        }
+        if (text.endsWith("```")) {
+            text = text.substring(0, text.length() - 3);
+        }
+        text = text.trim();
+
+        return gson.fromJson(text, JsonObject.class);
+    }
+
+    // =========================================================================
+    // Analyze Command
+    // =========================================================================
+
     public void analyzeCommand(String command, String context, AnalysisCallback callback) {
-        loadAuthenticationData(); // Reload prefs in case settings changed
-        
-        // Filter sensitive information if enabled
+        loadCredentials();
+
         boolean shouldFilter = prefs.getBoolean("command_filtering_enabled", true);
         String filteredCommand = shouldFilter ? PrivacyGuard.filterCommand(command) : command;
         String filteredContext = shouldFilter ? PrivacyGuard.filter(context) : context;
 
         if (!isAuthenticated()) {
             mainHandler.post(() -> {
-                if (listener != null) {
-                    listener.onAuthenticationRequired();
-                }
+                if (listener != null) listener.onAuthenticationRequired();
             });
             return;
         }
-        
+
         if ("gemini".equals(currentProvider)) {
             analyzeCommandGemini(filteredCommand, filteredContext, callback);
         } else {
@@ -227,29 +388,32 @@ public class AIClient {
     }
 
     private void analyzeCommandClaude(String command, String context, AnalysisCallback callback) {
-        JsonObject analysisRequest = new JsonObject();
-        analysisRequest.addProperty("command", command);
-        analysisRequest.addProperty("context", context);
-        analysisRequest.addProperty("type", "command_analysis");
-        
-        sendClaudeRequest("/analyze", analysisRequest, new RequestCallback() {
+        String systemPrompt = "You are a terminal command assistant integrated into a mobile terminal app. " +
+            "Analyze commands and provide helpful suggestions. " +
+            "Respond ONLY with a JSON object containing 'suggestion' (string) and 'confidence' (float 0.0-1.0).";
+
+        String userMessage = "Analyze this command: " + command + "\nContext: " + context;
+
+        sendClaudeRequest(systemPrompt, userMessage, 512, new RequestCallback() {
             @Override
             public void onSuccess(JsonObject response) {
-                if (response.has("suggestion")) {
-                    String suggestion = response.get("suggestion").getAsString();
-                    float confidence = response.has("confidence") ? 
-                        response.get("confidence").getAsFloat() : 0.5f;
-                    
+                try {
+                    JsonObject json = extractClaudeJson(response);
+                    String suggestion = json.get("suggestion").getAsString();
+                    float confidence = json.has("confidence") ?
+                        json.get("confidence").getAsFloat() : 0.8f;
+
                     mainHandler.post(() -> {
                         callback.onSuggestion(suggestion, confidence);
-                        
-                        if (listener != null) {
-                            listener.onSuggestionReceived(suggestion, confidence);
-                        }
+                        if (listener != null) listener.onSuggestionReceived(suggestion, confidence);
                     });
+                } catch (Exception e) {
+                    // If JSON parsing fails, use the raw text as the suggestion
+                    String rawText = extractClaudeText(response);
+                    mainHandler.post(() -> callback.onSuggestion(rawText, 0.5f));
                 }
             }
-            
+
             @Override
             public void onError(String error) {
                 mainHandler.post(() -> callback.onError(error));
@@ -258,9 +422,9 @@ public class AIClient {
     }
 
     private void analyzeCommandGemini(String command, String context, AnalysisCallback callback) {
-        String prompt = "Analyze this command: " + command + "\nContext: " + context + 
-                        "\nProvide a suggestion for improvement or explanation. " + 
-                        "Return ONLY JSON with 'suggestion' (string) and 'confidence' (float 0.0-1.0) fields. No markdown.";
+        String prompt = "Analyze this command: " + command + "\nContext: " + context +
+            "\nProvide a suggestion for improvement or explanation. " +
+            "Return ONLY JSON with 'suggestion' (string) and 'confidence' (float 0.0-1.0) fields. No markdown.";
 
         sendGeminiRequest(prompt, new RequestCallback() {
             @Override
@@ -285,14 +449,14 @@ public class AIClient {
             }
         }, error -> mainHandler.post(() -> callback.onError(error)));
     }
-    
-    /**
-     * Analyze error and provide solutions
-     */
+
+    // =========================================================================
+    // Analyze Error
+    // =========================================================================
+
     public void analyzeError(String command, String errorOutput, String context, ErrorCallback callback) {
-        loadAuthenticationData();
-        
-        // Filter sensitive information if enabled
+        loadCredentials();
+
         boolean shouldFilter = prefs.getBoolean("command_filtering_enabled", true);
         String filteredCommand = shouldFilter ? PrivacyGuard.filterCommand(command) : command;
         String filteredError = shouldFilter ? PrivacyGuard.filter(errorOutput) : errorOutput;
@@ -300,13 +464,11 @@ public class AIClient {
 
         if (!isAuthenticated()) {
             mainHandler.post(() -> {
-                if (listener != null) {
-                    listener.onAuthenticationRequired();
-                }
+                if (listener != null) listener.onAuthenticationRequired();
             });
             return;
         }
-        
+
         if ("gemini".equals(currentProvider)) {
             analyzeErrorGemini(filteredCommand, filteredError, filteredContext, callback);
         } else {
@@ -315,27 +477,32 @@ public class AIClient {
     }
 
     private void analyzeErrorClaude(String command, String errorOutput, String context, ErrorCallback callback) {
-        JsonObject errorRequest = new JsonObject();
-        errorRequest.addProperty("command", command);
-        errorRequest.addProperty("error", errorOutput);
-        errorRequest.addProperty("context", context);
-        errorRequest.addProperty("type", "error_analysis");
-        
-        sendClaudeRequest("/analyze", errorRequest, new RequestCallback() {
+        String systemPrompt = "You are a terminal error diagnostics assistant. " +
+            "Analyze command errors and provide actionable solutions. " +
+            "Respond ONLY with a JSON object containing 'analysis' (string) and 'solutions' (array of strings).";
+
+        String userMessage = "Command: " + command +
+            "\nError output: " + errorOutput +
+            "\nContext: " + context;
+
+        sendClaudeRequest(systemPrompt, userMessage, 1024, new RequestCallback() {
             @Override
             public void onSuccess(JsonObject response) {
-                String analysis = response.get("analysis").getAsString();
-                String[] solutions = gson.fromJson(response.get("solutions"), String[].class);
-                
-                mainHandler.post(() -> {
-                    callback.onAnalysis(analysis, solutions);
-                    
-                    if (listener != null) {
-                        listener.onErrorAnalysis(errorOutput, analysis, solutions);
-                    }
-                });
+                try {
+                    JsonObject json = extractClaudeJson(response);
+                    String analysis = json.get("analysis").getAsString();
+                    String[] solutions = gson.fromJson(json.get("solutions"), String[].class);
+
+                    mainHandler.post(() -> {
+                        callback.onAnalysis(analysis, solutions);
+                        if (listener != null) listener.onErrorAnalysis(errorOutput, analysis, solutions);
+                    });
+                } catch (Exception e) {
+                    String rawText = extractClaudeText(response);
+                    mainHandler.post(() -> callback.onAnalysis(rawText, new String[]{}));
+                }
             }
-            
+
             @Override
             public void onError(String error) {
                 mainHandler.post(() -> callback.onError(error));
@@ -344,8 +511,8 @@ public class AIClient {
     }
 
     private void analyzeErrorGemini(String command, String errorOutput, String context, ErrorCallback callback) {
-        String prompt = "Command: " + command + "\nError: " + errorOutput + "\nContext: " + context + 
-                        "\nAnalyze and provide solutions. Return ONLY JSON with 'analysis' (string) and 'solutions' (string array). No markdown.";
+        String prompt = "Command: " + command + "\nError: " + errorOutput + "\nContext: " + context +
+            "\nAnalyze and provide solutions. Return ONLY JSON with 'analysis' (string) and 'solutions' (string array). No markdown.";
 
         sendGeminiRequest(prompt, new RequestCallback() {
             @Override
@@ -370,23 +537,21 @@ public class AIClient {
             }
         }, error -> mainHandler.post(() -> callback.onError(error)));
     }
-    
-    /**
-     * Generate code based on natural language description
-     */
-    public void generateCode(String description, String language, String context, CodeCallback callback) {
-        loadAuthenticationData();
 
-        // Filter sensitive information if enabled
+    // =========================================================================
+    // Generate Code
+    // =========================================================================
+
+    public void generateCode(String description, String language, String context, CodeCallback callback) {
+        loadCredentials();
+
         boolean shouldFilter = prefs.getBoolean("command_filtering_enabled", true);
         String filteredDescription = shouldFilter ? PrivacyGuard.filter(description) : description;
         String filteredContext = shouldFilter ? PrivacyGuard.filter(context) : context;
 
         if (!isAuthenticated()) {
             mainHandler.post(() -> {
-                if (listener != null) {
-                    listener.onAuthenticationRequired();
-                }
+                if (listener != null) listener.onAuthenticationRequired();
             });
             return;
         }
@@ -399,28 +564,33 @@ public class AIClient {
     }
 
     private void generateCodeClaude(String description, String language, String context, CodeCallback callback) {
-        JsonObject codeRequest = new JsonObject();
-        codeRequest.addProperty("description", description);
-        codeRequest.addProperty("language", language);
-        codeRequest.addProperty("context", context);
-        codeRequest.addProperty("type", "code_generation");
-        
-        sendClaudeRequest("/generate", codeRequest, new RequestCallback() {
+        String systemPrompt = "You are a code generation assistant for a mobile terminal environment. " +
+            "Generate clean, well-commented code. " +
+            "Respond ONLY with a JSON object containing 'code' (string) and 'language' (string).";
+
+        String userMessage = "Generate " + language + " code for: " + description +
+            "\nContext: " + context;
+
+        sendClaudeRequest(systemPrompt, userMessage, 4096, new RequestCallback() {
             @Override
             public void onSuccess(JsonObject response) {
-                String code = response.get("code").getAsString();
-                String detectedLanguage = response.has("language") ? 
-                    response.get("language").getAsString() : language;
-                
-                mainHandler.post(() -> {
-                    callback.onCodeGenerated(code, detectedLanguage);
-                    
-                    if (listener != null) {
-                        listener.onCodeGenerated(code, detectedLanguage);
-                    }
-                });
+                try {
+                    JsonObject json = extractClaudeJson(response);
+                    String code = json.get("code").getAsString();
+                    String detectedLanguage = json.has("language") ?
+                        json.get("language").getAsString() : language;
+
+                    mainHandler.post(() -> {
+                        callback.onCodeGenerated(code, detectedLanguage);
+                        if (listener != null) listener.onCodeGenerated(code, detectedLanguage);
+                    });
+                } catch (Exception e) {
+                    // If JSON fails, return the raw text as code
+                    String rawText = extractClaudeText(response);
+                    mainHandler.post(() -> callback.onCodeGenerated(rawText, language));
+                }
             }
-            
+
             @Override
             public void onError(String error) {
                 mainHandler.post(() -> callback.onError(error));
@@ -429,8 +599,8 @@ public class AIClient {
     }
 
     private void generateCodeGemini(String description, String language, String context, CodeCallback callback) {
-        String prompt = "Write " + language + " code for: " + description + "\nContext: " + context + 
-                        "\nReturn ONLY JSON with 'code' (string) and 'language' (string). No markdown.";
+        String prompt = "Write " + language + " code for: " + description + "\nContext: " + context +
+            "\nReturn ONLY JSON with 'code' (string) and 'language' (string). No markdown.";
 
         sendGeminiRequest(prompt, new RequestCallback() {
             @Override
@@ -455,192 +625,49 @@ public class AIClient {
             }
         }, error -> mainHandler.post(() -> callback.onError(error)));
     }
-    
-    /**
-     * Start real-time AI assistance session
-     */
-    public void startRealtimeSession() {
-        loadAuthenticationData();
 
-        if (!isAuthenticated()) {
-            mainHandler.post(() -> {
-                if (listener != null) {
-                    listener.onAuthenticationRequired();
-                }
-            });
-            return;
-        }
-        
-        if ("gemini".equals(currentProvider)) {
-            Log.d(TAG, "Real-time session not supported for Gemini via REST");
-            // Optionally, we could simulate it or use a different mechanism.
-            // For now, just notifying connected to simulate success.
-            mainHandler.post(() -> {
-                if (listener != null) {
-                    listener.onConnectionStatusChanged(true);
-                }
-            });
-            return;
-        }
+    // =========================================================================
+    // Context Update (sends terminal context for AI awareness)
+    // =========================================================================
 
-        Request request = new Request.Builder()
-            .url("wss://claude.ai/api/ws")
-            .addHeader("Authorization", "Bearer " + authToken)
-            .addHeader("Session-ID", sessionId)
-            .build();
-            
-        webSocket = httpClient.newWebSocket(request, new WebSocketListener() {
-            @Override
-            public void onOpen(@NonNull WebSocket webSocket, @NonNull Response response) {
-                Log.d(TAG, "WebSocket connection opened");
-                mainHandler.post(() -> {
-                    if (listener != null) {
-                        listener.onConnectionStatusChanged(true);
-                    }
-                });
-            }
-            
-            @Override
-            public void onMessage(@NonNull WebSocket webSocket, @NonNull String text) {
-                handleRealtimeMessage(text);
-            }
-            
-            @Override
-            public void onClosing(@NonNull WebSocket webSocket, int code, @NonNull String reason) {
-                Log.d(TAG, "WebSocket connection closing: " + reason);
-                mainHandler.post(() -> {
-                    if (listener != null) {
-                        listener.onConnectionStatusChanged(false);
-                    }
-                });
-            }
-            
-            @Override
-            public void onFailure(@NonNull WebSocket webSocket, @NonNull Throwable t, @Nullable Response response) {
-                Log.e(TAG, "WebSocket connection failed", t);
-                mainHandler.post(() -> {
-                    if (listener != null) {
-                        listener.onConnectionStatusChanged(false);
-                    }
-                });
-            }
-        });
-    }
-    
-    private void handleRealtimeMessage(String message) {
-        try {
-            JsonObject msg = gson.fromJson(message, JsonObject.class);
-            String type = msg.get("type").getAsString();
-            
-            mainHandler.post(() -> {
-                switch (type) {
-                    case "suggestion":
-                        if (listener != null) {
-                            String suggestion = msg.get("content").getAsString();
-                            float confidence = msg.get("confidence").getAsFloat();
-                            listener.onSuggestionReceived(suggestion, confidence);
-                        }
-                        break;
-                        
-                    case "error_analysis":
-                        if (listener != null) {
-                            String error = msg.get("error").getAsString();
-                            String analysis = msg.get("analysis").getAsString();
-                            String[] solutions = gson.fromJson(msg.get("solutions"), String[].class);
-                            listener.onErrorAnalysis(error, analysis, solutions);
-                        }
-                        break;
-                }
-            });
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to parse realtime message", e);
-        }
-    }
-    
     /**
-     * Send real-time context update
+     * Send context update to Claude for ongoing awareness.
+     * Uses a lightweight request to keep the AI informed of terminal state.
      */
     public void sendContextUpdate(String workingDirectory, String currentCommand, String[] recentCommands) {
-        if ("gemini".equals(currentProvider)) return; // Not supported for Gemini REST
+        if (!"claude".equals(currentProvider) || !isAuthenticated()) return;
 
-        if (webSocket == null) return;
-        
-        // Filter sensitive information if enabled
-        boolean shouldFilter = prefs.getBoolean("command_filtering_enabled", true);
-        String filteredCommand = shouldFilter ? PrivacyGuard.filterCommand(currentCommand) : currentCommand;
-        String[] filteredRecent = new String[recentCommands.length];
-        for (int i = 0; i < recentCommands.length; i++) {
-            filteredRecent[i] = shouldFilter ? PrivacyGuard.filterCommand(recentCommands[i]) : recentCommands[i];
-        }
-
-        JsonObject contextUpdate = new JsonObject();
-        contextUpdate.addProperty("type", "context_update");
-        contextUpdate.addProperty("working_directory", workingDirectory);
-        contextUpdate.addProperty("current_command", filteredCommand);
-        contextUpdate.add("recent_commands", gson.toJsonTree(filteredRecent));
-        
-        webSocket.send(gson.toJson(contextUpdate));
-    }
-    
-    private void sendClaudeRequest(String endpoint, JsonObject requestBody, RequestCallback callback) {
-        RequestBody body = RequestBody.create(gson.toJson(requestBody), JSON);
-        Request request = new Request.Builder()
-            .url(CLAUDE_API_BASE_URL + endpoint)
-            .addHeader("Authorization", "Bearer " + authToken)
-            .addHeader("Session-ID", sessionId)
-            .post(body)
-            .build();
-            
-        httpClient.newCall(request).enqueue(new Callback() {
-            @Override
-            public void onFailure(@NonNull Call call, @NonNull IOException e) {
-                callback.onError("Request failed: " + e.getMessage());
-            }
-            
-            @Override
-            public void onResponse(@NonNull Call call, @NonNull Response response) throws IOException {
-                if (response.isSuccessful()) {
-                    String responseBody = response.body().string();
-                    JsonObject jsonResponse = gson.fromJson(responseBody, JsonObject.class);
-                    callback.onSuccess(jsonResponse);
-                } else if (response.code() == 401) {
-                    // Token expired
-                    authToken = null;
-                    sessionId = null;
-                    saveAuthenticationData();
-                    mainHandler.post(() -> {
-                        if (listener != null) {
-                            listener.onAuthenticationRequired();
-                        }
-                    });
-                } else {
-                    callback.onError("Request failed: " + response.code());
-                }
-            }
-        });
+        // Context updates are fire-and-forget informational requests
+        // They help the next analyzeCommand/analyzeError call have better context
+        // We store this locally rather than making an API call for each keystroke
+        prefs.edit()
+            .putString("last_working_dir", workingDirectory)
+            .putString("last_command", currentCommand)
+            .apply();
     }
 
-    private void sendGeminiRequest(String prompt, RequestCallback callback, AIClient.AnalysisCallback.OnError errorCallback) { // Using RequestCallback interface but adapting errors
-        // Construct Gemini JSON
+    // =========================================================================
+    // Gemini Request Method (unchanged - was already correct)
+    // =========================================================================
+
+    private void sendGeminiRequest(String prompt, RequestCallback callback,
+                                    AnalysisCallback.OnError errorCallback) {
         JsonObject content = new JsonObject();
         JsonObject part = new JsonObject();
         part.addProperty("text", prompt);
         JsonArray parts = new JsonArray();
         parts.add(part);
         content.add("parts", parts);
-        
+
         JsonArray contents = new JsonArray();
         contents.add(content);
-        
+
         JsonObject requestBody = new JsonObject();
         requestBody.add("contents", contents);
 
-        // Don't expose API key in URL - use header instead
-        String url = GEMINI_API_URL;
-
         RequestBody body = RequestBody.create(gson.toJson(requestBody), JSON);
         Request request = new Request.Builder()
-            .url(url)
+            .url(GEMINI_API_URL)
             .addHeader("x-goog-api-key", geminiApiKey)
             .addHeader("Content-Type", "application/json")
             .post(body)
@@ -649,17 +676,22 @@ public class AIClient {
         httpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(@NonNull Call call, @NonNull IOException e) {
-                errorCallback.onError("Gemini Request failed: " + e.getMessage());
+                errorCallback.onError("Gemini request failed: " + e.getMessage());
             }
 
             @Override
             public void onResponse(@NonNull Call call, @NonNull Response response) throws IOException {
-                if (response.isSuccessful()) {
-                    String responseBody = response.body().string();
-                    JsonObject jsonResponse = gson.fromJson(responseBody, JsonObject.class);
-                    callback.onSuccess(jsonResponse);
-                } else {
-                     errorCallback.onError("Gemini Request failed: " + response.code() + " " + response.body().string());
+                try {
+                    if (response.isSuccessful()) {
+                        String responseBody = response.body().string();
+                        JsonObject jsonResponse = gson.fromJson(responseBody, JsonObject.class);
+                        callback.onSuccess(jsonResponse);
+                    } else {
+                        String errorBody = response.body() != null ? response.body().string() : "";
+                        errorCallback.onError("Gemini error " + response.code() + ": " + errorBody);
+                    }
+                } finally {
+                    if (response.body() != null) response.body().close();
                 }
             }
         });
@@ -667,13 +699,13 @@ public class AIClient {
 
     private JsonObject parseGeminiResponse(JsonObject response) {
         JsonArray candidates = response.getAsJsonArray("candidates");
-        if (candidates.size() > 0) {
+        if (candidates != null && candidates.size() > 0) {
             JsonObject candidate = candidates.get(0).getAsJsonObject();
             JsonObject content = candidate.getAsJsonObject("content");
             JsonArray parts = content.getAsJsonArray("parts");
             String text = parts.get(0).getAsJsonObject().get("text").getAsString();
-            
-            // Clean markdown
+
+            // Strip markdown code fences
             text = text.trim();
             if (text.startsWith("```json")) {
                 text = text.substring(7);
@@ -683,44 +715,49 @@ public class AIClient {
             if (text.endsWith("```")) {
                 text = text.substring(0, text.length() - 3);
             }
-            
-            return gson.fromJson(text, JsonObject.class);
+
+            return gson.fromJson(text.trim(), JsonObject.class);
         }
         throw new RuntimeException("No candidates in Gemini response");
     }
-    
+
+    // =========================================================================
+    // Lifecycle
+    // =========================================================================
+
     public void shutdown() {
-        if (webSocket != null) {
-            webSocket.close(1000, "Client shutdown");
-            webSocket = null;
-        }
+        // No WebSocket to close anymore - all requests are stateless HTTP
+        Log.d(TAG, "AIClient shutdown");
     }
-    
-    // Callback interfaces
+
+    // =========================================================================
+    // Callback Interfaces
+    // =========================================================================
+
     public interface AuthCallback {
         void onSuccess();
         void onError(String error);
     }
-    
+
     public interface AnalysisCallback {
         void onSuggestion(String suggestion, float confidence);
         void onError(String error);
-        
+
         interface OnError {
-             void onError(String error);
+            void onError(String error);
         }
     }
-    
+
     public interface ErrorCallback {
         void onAnalysis(String analysis, String[] solutions);
         void onError(String error);
     }
-    
+
     public interface CodeCallback {
         void onCodeGenerated(String code, String language);
         void onError(String error);
     }
-    
+
     private interface RequestCallback {
         void onSuccess(JsonObject response);
         void onError(String error);
