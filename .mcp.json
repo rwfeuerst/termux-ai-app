@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mcp-inspector": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/inspector", "--cli"],
+      "env": {
+        "MCP_AUTO_OPEN_ENABLED": "false"
+      }
+    }
+  }
+}
